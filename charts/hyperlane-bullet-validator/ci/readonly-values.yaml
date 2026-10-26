@@ -1,0 +1,10 @@
+# Read-only (demo) mode against Bullet mainnet: checks the public bucket with
+# public reads only. No key, no AWS credentials.
+validator:
+  mode: readonly
+sequencerUrl: https://rollup.mainnet.bullet.xyz
+mailboxDomain: 5555
+s3:
+  bucket: hyperlane-validator-mainnet-bucket
+  region: ap-northeast-1
+  prefix: bulletmainnet-signatures

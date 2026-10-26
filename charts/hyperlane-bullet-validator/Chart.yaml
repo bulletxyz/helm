@@ -1,0 +1,27 @@
+apiVersion: v2
+name: hyperlane-bullet-validator
+description: >-
+  Hyperlane checkpoint validator for the Bullet rollup. Signs the rollup's
+  merkle-tree-hook checkpoints and publishes them to an S3 bucket, or audits an
+  existing bucket in read-only mode.
+type: application
+# Both versions and the image digest are placeholders in the monorepo; the
+# release export rewrites them. `version` is the chart's semver, `appVersion`
+# the image tag.
+version: 0.2.0
+appVersion: "0.2.0"
+annotations:
+  # The published image's digest, which the sealed EC2 image pulls.
+  bullet.xyz/image-digest: "sha256:52caa55105a6f78ed0542b93034c521b26ccdf7c20c74fb777acb57a1415544a"
+home: https://github.com/bulletxyz/helm
+sources:
+  - https://github.com/bulletxyz/helm
+keywords:
+  - bullet
+  - hyperlane
+  - validator
+  - interchain
+  - checkpoint
+maintainers:
+  - name: Bullet
+    url: https://github.com/bulletxyz

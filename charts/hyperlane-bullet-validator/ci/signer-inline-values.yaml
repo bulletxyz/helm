@@ -1,0 +1,22 @@
+# Signer with an inline key (chart-managed Secret) and static AWS credentials
+# from an existing Secret. The key below is a throwaway test value.
+validator:
+  mode: signer
+  key:
+    value: "0x0000000000000000000000000000000000000000000000000000000000000001"
+sequencerUrl: https://rollup.mainnet.bullet.xyz
+mailboxDomain: 5555
+scanIntervalSecs: 15
+logLevel: info,hyperlane_bullet_validator=debug
+s3:
+  bucket: example-validator-signatures
+  region: us-east-1
+  prefix: bulletmainnet
+serviceAccount:
+  create: false
+extraEnv:
+  - name: AWS_MAX_ATTEMPTS
+    value: "5"
+extraEnvFrom:
+  - secretRef:
+      name: validator-aws-credentials

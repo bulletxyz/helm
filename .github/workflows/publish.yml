@@ -1,0 +1,233 @@
+name: Publish chart
+
+# Publishes the image and chart of an Octopus snapshot commit to GHCR, then the
+# draft release, then the validator's AMIs. To retry, dispatch it from main with
+# the snapshot's commit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full SHA of a snapshot commit on main
+        required: true
+        type: string
+
+# One group per snapshot: a shared group would drop pending runs in a burst.
+concurrency:
+  group: publish-helm-${{ inputs.commit || github.sha }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The environment must be limited to main and be the only holder of
+    # RELEASE_APP_PRIVATE_KEY, so no other branch can obtain the release App key.
+    environment: publish
+    # GITHUB_TOKEN is used only for GHCR, which rejects App installation tokens;
+    # repository contents use the release App token.
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      chart: ${{ steps.snapshot.outputs.chart }}
+      chart_version: ${{ steps.snapshot.outputs.chart_version }}
+      commit: ${{ steps.snapshot.outputs.commit }}
+    steps:
+      - name: Generate release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      # Only the workflow's own commit runs until the snapshot is validated.
+      - name: Checkout trusted workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Validate trusted snapshot
+        id: snapshot
+        env:
+          COMMIT: ${{ inputs.commit || github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          python3 .github/scripts/publish_chart.py validate-trigger \
+            --event "$GITHUB_EVENT_PATH" \
+            --sha "$COMMIT" \
+            --actor "$GITHUB_ACTOR" \
+            --ref "$GITHUB_REF" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Checkout validated snapshot
+        env:
+          COMMIT: ${{ steps.snapshot.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git checkout --quiet --detach "$COMMIT"
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+
+      - name: Check draft release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CHART: ${{ steps.snapshot.outputs.chart }}
+          CHART_VERSION: ${{ steps.snapshot.outputs.chart_version }}
+          APP_VERSION: ${{ steps.snapshot.outputs.app_version }}
+          IMAGE: ${{ steps.snapshot.outputs.image }}
+          RELEASE_ID: ${{ steps.snapshot.outputs.release_id }}
+          ASSET_ID: ${{ steps.snapshot.outputs.asset_id }}
+          ARCHIVE_SHA256: ${{ steps.snapshot.outputs.archive_sha256 }}
+        run: |
+          python3 .github/scripts/publish_chart.py check-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --chart "$CHART" \
+            --chart-version "$CHART_VERSION" \
+            --app-version "$APP_VERSION" \
+            --image "$IMAGE" \
+            --release-id "$RELEASE_ID" \
+            --asset-id "$ASSET_ID" \
+            --archive-sha256 "$ARCHIVE_SHA256"
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.22.0
+
+      - name: Lint charts
+        run: bash .github/scripts/lint_charts.sh
+
+      - name: Download image archive
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ASSET_ID: ${{ steps.snapshot.outputs.asset_id }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+            > "$RUNNER_TEMP/image.oci.tar"
+
+      - name: Verify image archive
+        id: archive
+        env:
+          ARCHIVE_SHA256: ${{ steps.snapshot.outputs.archive_sha256 }}
+          IMAGE_DIGEST: ${{ steps.snapshot.outputs.image_digest }}
+        run: |
+          python3 .github/scripts/publish_chart.py verify-archive \
+            --archive "$RUNNER_TEMP/image.oci.tar" \
+            --sha256 "$ARCHIVE_SHA256" \
+            --digest "$IMAGE_DIGEST" \
+            --destination "$RUNNER_TEMP/image-layout" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+        with:
+          version: v0.22.1
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GITHUB_TOKEN" \
+            | crane auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$GITHUB_TOKEN" \
+            | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish image
+        env:
+          CHART: ${{ steps.snapshot.outputs.chart }}
+          IMAGE: ${{ steps.snapshot.outputs.image }}
+          APP_VERSION: ${{ steps.snapshot.outputs.app_version }}
+          IMAGE_DIGEST: ${{ steps.snapshot.outputs.image_digest }}
+          LAYOUT: ${{ steps.archive.outputs.layout }}
+        run: |
+          python3 .github/scripts/publish_chart.py publish-image \
+            --chart "$CHART" \
+            --image "$IMAGE" \
+            --app-version "$APP_VERSION" \
+            --digest "$IMAGE_DIGEST" \
+            --layout "$LAYOUT"
+
+      - name: Publish chart
+        env:
+          CHART: ${{ steps.snapshot.outputs.chart }}
+          CHART_VERSION: ${{ steps.snapshot.outputs.chart_version }}
+        run: |
+          python3 .github/scripts/publish_chart.py publish-chart \
+            --chart "$CHART" \
+            --chart-version "$CHART_VERSION"
+
+      - name: Create exact tag and publish release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CHART: ${{ steps.snapshot.outputs.chart }}
+          CHART_VERSION: ${{ steps.snapshot.outputs.chart_version }}
+          COMMIT: ${{ steps.snapshot.outputs.commit }}
+          RELEASE_ID: ${{ steps.snapshot.outputs.release_id }}
+        run: |
+          python3 .github/scripts/publish_chart.py finalize-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --chart "$CHART" \
+            --chart-version "$CHART_VERSION" \
+            --commit "$COMMIT" \
+            --release-id "$RELEASE_ID"
+
+  # Publishes the validator's sealed EC2 image (validators/hyperlane-bullet-validator)
+  # as the public AMIs hyperlane-bullet-validator-<chartVersion>.
+  ami:
+    needs: publish
+    if: needs.publish.outputs.chart == 'hyperlane-bullet-validator'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FLAKE: path:.?dir=validators/hyperlane-bullet-validator
+    steps:
+      - name: Checkout validated snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+
+      # systemd-repart maps root in a user namespace, which Ubuntu's AppArmor
+      # forbids unprivileged processes by default.
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+
+      # Before authenticating: the chained role session lasts an hour.
+      - name: Build image
+        run: nix build --no-link "$FLAKE"
+
+      - name: Authenticate with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::840153641671:role/helm-gha
+          allowed-account-ids: "840153641671"
+
+      - name: Assume the AMI publisher
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::010222938823:role/hyperlane-validator-ami
+          role-chaining: true
+          allowed-account-ids: "010222938823"
+
+      - name: Publish AMI
+        env:
+          CHART_VERSION: ${{ needs.publish.outputs.chart_version }}
+        run: nix run "$FLAKE#publish-ami" -- "$CHART_VERSION"

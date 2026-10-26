@@ -1,0 +1,170 @@
+# Default values for hyperlane-bullet-validator.
+#
+# Every value is documented in README.md. Values marked REQUIRED have no
+# default, so a missing setting never falls back to the binary's mainnet config.
+
+# -- Override the chart name used in resource names and labels.
+nameOverride: ""
+# -- Override the full resource name (default: <release>-<chart>, collapsed
+# when the release name already contains the chart name).
+fullnameOverride: ""
+
+# -- Fixed at 1: a validator key must have exactly one signer. The Deployment
+# uses the Recreate strategy so an upgrade never runs two pods at once.
+replicaCount: 1
+
+image:
+  # -- Image repository. The published image is a multi-arch index
+  # (linux/amd64 and linux/arm64).
+  repository: ghcr.io/bulletxyz/hyperlane-bullet-validator
+  # -- Image tag. Defaults to the chart's appVersion.
+  tag: ""
+  # -- Image digest (sha256:...). Takes precedence over `tag` when set.
+  digest: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Pull secrets for a private mirror of the image (the GHCR image is public).
+imagePullSecrets: []
+
+validator:
+  # -- REQUIRED. `signer` signs checkpoints and uploads them to S3 (needs a
+  # key and S3 write credentials). `readonly` is demo mode: it checks the
+  # bucket against the rollup and logs every checkpoint it would sign, using
+  # only public reads (no key, no AWS credentials).
+  mode: ""
+  key:
+    # -- Name of an existing Secret holding the validator's secp256k1 private
+    # key (32-byte hex, 0x prefix optional). Preferred over `value`.
+    existingSecret: ""
+    # -- Key within `existingSecret` that holds the private key.
+    existingSecretKey: validator-key
+    # -- The private key inline (32-byte hex). The chart then creates a
+    # Secret. Not recommended: the key ends up in your values and in the Helm
+    # release record. Mutually exclusive with `existingSecret`.
+    value: ""
+
+# -- REQUIRED. Rollup REST endpoint, e.g. https://rollup.mainnet.bullet.xyz.
+sequencerUrl: ""
+# -- Optional ledger websocket base used to wake the scan loop early. The
+# public endpoints do not expose it, so leave it empty outside Bullet's own
+# clusters; the validator then polls every `scanIntervalSecs`.
+wsUrl: ""
+# -- REQUIRED. Hyperlane domain id of the rollup (Bullet mainnet: 5555,
+# Bullet testnet: 5556). 0 means unset.
+mailboxDomain: 0
+# -- Polling interval of the scan loop, in seconds.
+scanIntervalSecs: 30
+# -- Log filter, passed as RUST_LOG (e.g. `info` or `info,hyperlane=debug`).
+logLevel: info
+
+s3:
+  # -- REQUIRED. Bucket holding the signed checkpoints.
+  bucket: ""
+  # -- REQUIRED. AWS region of the bucket.
+  region: ""
+  # -- REQUIRED. Key prefix ("folder") inside the bucket.
+  prefix: ""
+
+ports:
+  # -- Prometheus metrics port (serves /metrics).
+  metrics: 9000
+  # -- Health port (serves /health, /healthz and /ready).
+  health: 8080
+
+# The startup probe polls /healthz, which answers once startup (S3 client and,
+# in signer mode, the announcement upload and check) has finished.
+startupProbe:
+  # -- Seconds between startup probes.
+  periodSeconds: 10
+  # -- Failed startup probes before the container is restarted. The defaults
+  # allow 5 minutes (30 x 10 s).
+  failureThreshold: 30
+
+serviceAccount:
+  # -- Create a ServiceAccount for the validator.
+  create: true
+  # -- ServiceAccount name. Defaults to the full name when `create` is true,
+  # and to `default` otherwise.
+  name: ""
+  # -- ServiceAccount annotations, e.g. the IRSA role:
+  # `eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/<role>`.
+  annotations: {}
+
+# -- Extra environment variables for the container (e.g. AWS_* settings).
+# HYPERLANE_VALIDATOR_* and RUST_LOG are managed by the chart and rejected here.
+extraEnv: []
+# -- Extra envFrom sources, e.g. a Secret with AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY for static credentials.
+extraEnvFrom: []
+
+# -- Add prometheus.io/scrape, port and path annotations to the pod.
+prometheusScrapeAnnotations: true
+# -- Extra pod annotations.
+podAnnotations: {}
+# -- Extra pod labels. They must not set the selector labels
+# app.kubernetes.io/name or app.kubernetes.io/instance.
+podLabels: {}
+
+# -- Pod security context. Runs as the image's non-root user (65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container resources.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 512m
+    memory: 256Mi
+
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity rules.
+affinity: {}
+# -- Priority class name.
+priorityClassName: ""
+
+service:
+  # -- Create a ClusterIP Service exposing the metrics and health ports.
+  enabled: true
+  # -- Service annotations.
+  annotations: {}
+
+serviceMonitor:
+  # -- Create a Prometheus Operator ServiceMonitor. Rendered only when the
+  # cluster serves monitoring.coreos.com/v1; requires `service.enabled`.
+  enabled: false
+  # -- Scrape interval.
+  interval: 30s
+  # -- Scrape timeout (empty: Prometheus default).
+  scrapeTimeout: ""
+  # -- Extra ServiceMonitor labels, e.g. the label your Prometheus selects on.
+  labels: {}
+  # -- ServiceMonitor annotations.
+  annotations: {}
+  # -- Relabelings applied before scraping.
+  relabelings: []
+  # -- Metric relabelings applied after scraping.
+  metricRelabelings: []

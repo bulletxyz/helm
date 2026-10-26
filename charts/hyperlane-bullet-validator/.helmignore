@@ -1,0 +1,15 @@
+# Patterns to ignore when building the chart package (helm package).
+# CI-only values files are not part of the published chart.
+ci/
+*.tgz
+# Common VCS, editor and OS files.
+.git/
+.gitignore
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.idea/
+.vscode/

@@ -1,0 +1,34 @@
+{{- $fullname := include "hyperlane-bullet-validator.fullname" . -}}
+hyperlane-bullet-validator {{ include "hyperlane-bullet-validator.imageTag" . }} is installed as {{ $fullname }} in namespace {{ .Release.Namespace }}.
+
+Mode: {{ .Values.validator.mode }}
+{{- if eq .Values.validator.mode "signer" }}
+  Signs checkpoints for mailbox domain {{ int64 .Values.mailboxDomain }} and uploads them to
+  s3://{{ .Values.s3.bucket }}/{{ .Values.s3.prefix }} ({{ .Values.s3.region }}).
+  The pod needs AWS credentials allowed to s3:PutObject there.
+  It also uploads its signed announcement.json there, but does not submit it
+  on-chain. Relayers only use its signatures once it has been announced (and
+  added to the ISM validator set).
+{{- else }}
+  Read-only check of s3://{{ .Values.s3.bucket }}/{{ .Values.s3.prefix }} against {{ .Values.sequencerUrl }}.
+  Nothing is signed or uploaded; each checkpoint the validator would sign is logged as an error.
+{{- end }}
+
+Follow the logs:
+  kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ $fullname }} -f
+
+Check readiness (completed scan passes) and metrics; run the port-forward in
+one terminal and the curls in another:
+  kubectl --namespace {{ .Release.Namespace }} port-forward deploy/{{ $fullname }} {{ .Values.ports.health }} {{ .Values.ports.metrics }}
+  curl -s localhost:{{ .Values.ports.health }}/ready
+  curl -s localhost:{{ .Values.ports.metrics }}/metrics
+
+A crash loop with a divergence error is intentional: the validator refuses to
+sign when the bucket and the chain disagree. See the chart README before
+deleting anything from the bucket.
+{{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1")) }}
+
+WARNING: serviceMonitor.enabled is true, but this cluster does not serve
+monitoring.coreos.com/v1, so no ServiceMonitor was created. Install the
+Prometheus Operator CRDs and upgrade the release.
+{{- end }}

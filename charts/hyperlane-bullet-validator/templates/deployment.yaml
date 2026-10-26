@@ -1,0 +1,149 @@
+{{- include "hyperlane-bullet-validator.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hyperlane-bullet-validator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hyperlane-bullet-validator.labels" . | nindent 4 }}
+spec:
+  # Exactly one signer per validator key, and never two pods at once.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "hyperlane-bullet-validator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hyperlane-bullet-validator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- $annotations := dict }}
+      {{- if .Values.prometheusScrapeAnnotations }}
+      {{- $_ := set $annotations "prometheus.io/scrape" "true" }}
+      {{- $_ := set $annotations "prometheus.io/port" (toString .Values.ports.metrics) }}
+      {{- $_ := set $annotations "prometheus.io/path" "/metrics" }}
+      {{- end }}
+      {{- if .Values.validator.key.value }}
+      {{- /* Restart the pod when the inline key changes. */}}
+      {{- $_ := set $annotations "checksum/validator-key" (include (print $.Template.BasePath "/secret.yaml") . | sha256sum) }}
+      {{- end }}
+      {{- $annotations = merge $annotations (deepCopy (default (dict) .Values.podAnnotations)) }}
+      {{- with $annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "hyperlane-bullet-validator.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: validator
+          image: {{ include "hyperlane-bullet-validator.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.ports.health }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
+              protocol: TCP
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+            # Every network setting is passed explicitly: anything left unset
+            # would fall back to the mainnet defaults embedded in the binary.
+            - name: HYPERLANE_VALIDATOR_SEQUENCER_URL
+              value: {{ .Values.sequencerUrl | quote }}
+            {{- with .Values.wsUrl }}
+            - name: HYPERLANE_VALIDATOR_WS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: HYPERLANE_VALIDATOR_S3_BUCKET
+              value: {{ .Values.s3.bucket | quote }}
+            - name: HYPERLANE_VALIDATOR_S3_REGION
+              value: {{ .Values.s3.region | quote }}
+            - name: HYPERLANE_VALIDATOR_S3_PREFIX
+              value: {{ .Values.s3.prefix | quote }}
+            - name: HYPERLANE_VALIDATOR_MAILBOX_DOMAIN
+              value: {{ int64 .Values.mailboxDomain | toString | quote }}
+            - name: HYPERLANE_VALIDATOR_SCAN_INTERVAL_SECS
+              value: {{ int64 .Values.scanIntervalSecs | toString | quote }}
+            - name: HYPERLANE_VALIDATOR_METRICS_PORT
+              value: {{ int64 .Values.ports.metrics | toString | quote }}
+            - name: HYPERLANE_VALIDATOR_HEALTH_PORT
+              value: {{ int64 .Values.ports.health | toString | quote }}
+            {{- with include "hyperlane-bullet-validator.keySecretName" . }}
+            # Present only in signer mode; without it the daemon runs read-only.
+            - name: HYPERLANE_VALIDATOR_VALIDATOR_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ include "hyperlane-bullet-validator.keySecretKey" $ }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # The health server binds only once the S3 client is set up and, in
+          # signer mode, the announcement is uploaded and checked, which can take
+          # a while. Kubernetes holds the readiness and liveness probes until
+          # the static /healthz answers, so liveness needs no initial delay.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: {{ int64 .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ int64 .Values.startupProbe.failureThreshold }}
+          # Readiness is completed passes, so a daemon busy against a dead
+          # dependency reports unready while staying live.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Liveness tracks progress staleness (/health), not the static
+          # /healthz, so a wedged process is restarted. The daemon's startup
+          # grace and staleness window keep the initial reconcile healthy.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            periodSeconds: 20
+            failureThreshold: 6
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

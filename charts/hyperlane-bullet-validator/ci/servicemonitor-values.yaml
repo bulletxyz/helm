@@ -1,0 +1,16 @@
+# Read-only mode with a Prometheus Operator ServiceMonitor. Render with
+# --api-versions monitoring.coreos.com/v1 to include it.
+validator:
+  mode: readonly
+sequencerUrl: https://rollup.mainnet.bullet.xyz
+mailboxDomain: 5555
+s3:
+  bucket: hyperlane-validator-mainnet-bucket
+  region: ap-northeast-1
+  prefix: bulletmainnet-signatures
+prometheusScrapeAnnotations: false
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  labels:
+    release: kube-prometheus-stack
